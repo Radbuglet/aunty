@@ -2,14 +2,6 @@ use std::{cell::RefCell, fmt};
 
 use rustc_hash::FxHashSet;
 
-// === Rust patterns === //
-
-pub trait ExtensionFor<T: ?Sized> {}
-
-impl<T: ?Sized> ExtensionFor<T> for T {}
-
-// === Formatters === //
-
 pub struct DebugUsingDisplay<'a, T: ?Sized>(pub &'a T);
 
 impl<T: ?Sized + fmt::Display> fmt::Debug for DebugUsingDisplay<'_, T> {
