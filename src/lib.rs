@@ -7,7 +7,7 @@ pub use autoken;
 
 pub mod prelude {
     pub use super::{
-        cell::{OpenCell, VecCell},
+        cell::CloneCell,
         delegate::delegate,
         entity::{CyclicCtor, Entity, StrongEntity},
         obj::{Obj, ObjMut, ObjRef, StrongObj},

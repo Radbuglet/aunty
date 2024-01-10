@@ -4,10 +4,9 @@ use std::{
     marker::PhantomData,
     mem::{forget, ManuallyDrop},
     ops::{Deref, DerefMut},
-    slice::SliceIndex,
 };
 
-use crate::{obj::Obj, util::FmtNoCycle};
+use crate::obj::Obj;
 
 // === AuToken-Compatible RefCells === //
 
@@ -127,7 +126,6 @@ impl<T, S: CellOpener<T>> Drop for CellOpenGuard<'_, T, S> {
     }
 }
 
-// TODO: Add checking to this
 pub fn open_cell<T, S>(cell: &Cell<T>) -> CellOpenGuard<'_, T, S>
 where
     S: CellOpener<T>,
@@ -144,12 +142,12 @@ where
 // === CloneCell === //
 
 #[repr(transparent)]
-pub struct OpenCell<T, S = NaturalCellOpener> {
+pub struct CloneCell<T, S = NaturalCellOpener> {
     _opener: PhantomData<fn() -> S>,
     cell: Cell<T>,
 }
 
-impl<T, S> OpenCell<T, S> {
+impl<T, S> CloneCell<T, S> {
     pub const fn new(value: T) -> Self {
         Self {
             _opener: PhantomData,
@@ -157,11 +155,11 @@ impl<T, S> OpenCell<T, S> {
         }
     }
 
-    pub fn from_cell(cell: &Cell<T>) -> &OpenCell<T, S> {
+    pub fn from_cell(cell: &Cell<T>) -> &CloneCell<T, S> {
         unsafe { std::mem::transmute(cell) }
     }
 
-    pub fn from_mut(v: &mut T) -> &OpenCell<T, S> {
+    pub fn from_mut(v: &mut T) -> &CloneCell<T, S> {
         Self::from_cell(Cell::from_mut(v))
     }
 
@@ -189,7 +187,7 @@ impl<T, S> OpenCell<T, S> {
         self.cell.replace(value)
     }
 
-    pub fn swap<S2>(&self, other: &OpenCell<T, S2>) {
+    pub fn swap<S2>(&self, other: &CloneCell<T, S2>) {
         self.cell.swap(&other.cell)
     }
 
@@ -201,7 +199,7 @@ impl<T, S> OpenCell<T, S> {
     }
 }
 
-impl<T, S: CellOpener<T>> OpenCell<T, S> {
+impl<T, S: CellOpener<T>> CloneCell<T, S> {
     pub fn open(&self) -> CellOpenGuard<'_, T, S> {
         open_cell::<T, S>(&self.cell)
     }
@@ -214,75 +212,20 @@ impl<T, S: CellOpener<T>> OpenCell<T, S> {
     }
 }
 
-impl<T: fmt::Debug, S: CellOpener<T>> fmt::Debug for OpenCell<T, S> {
+impl<T: fmt::Debug + Clone, S: CellOpener<T>> fmt::Debug for CloneCell<T, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("OpenCell")
-            .field(&FmtNoCycle::<T>(&*self.open()))
-            .finish()
+        f.debug_tuple("CloneCell").field(&self.get()).finish()
     }
 }
 
-impl<T: Clone, S: CellOpener<T>> Clone for OpenCell<T, S> {
+impl<T: Clone, S: CellOpener<T>> Clone for CloneCell<T, S> {
     fn clone(&self) -> Self {
         Self::new(self.get())
     }
 }
 
-impl<T: Default, S> Default for OpenCell<T, S> {
+impl<T: Default, S> Default for CloneCell<T, S> {
     fn default() -> Self {
         Self::new(T::default())
     }
-}
-
-// === VecCell === //
-
-#[derive(Debug, Clone)]
-pub struct VecCell<T>(OpenCell<Vec<T>>);
-
-impl<T> Default for VecCell<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> VecCell<T> {
-    pub const fn new() -> Self {
-        Self(OpenCell::new(Vec::new()))
-    }
-
-    pub fn push(&self, value: T) {
-        self.0.open().push(value);
-    }
-
-    pub fn pop(&self) -> Option<T> {
-        self.0.open().pop()
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.open().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.open().is_empty()
-    }
-
-    pub fn swap_remove(&self, index: usize) -> T {
-        self.0.open().swap_remove(index)
-    }
-
-    pub fn try_get<I: SliceIndex<[T]>>(&self, index: I) -> Option<I::Output>
-    where
-        I::Output: Clone,
-    {
-        self.0.open().get(index).cloned()
-    }
-
-    pub fn get<I: SliceIndex<[T]>>(&self, index: I) -> I::Output
-    where
-        I::Output: Clone,
-    {
-        self.0.open()[index].clone()
-    }
-
-    // TODO: Complete roster of methods
 }

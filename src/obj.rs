@@ -12,15 +12,15 @@ use autoken::{
     ImmutableBorrow, MutableBorrow, Nothing, PotentialImmutableBorrow, PotentialMutableBorrow,
 };
 
-use crate::util::{DebugUsingDisplay, FmtNoCycle};
+use crate::util::{coerce_rc, coerce_weak, DebugUsingDisplay, FmtNoCycle};
 
 // === StrongObj === //
 
-pub struct StrongObj<T> {
+pub struct StrongObj<T: ?Sized> {
     value: ManuallyDrop<Rc<RefCell<T>>>,
 }
 
-impl<T: fmt::Debug> fmt::Debug for StrongObj<T> {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for StrongObj<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.value.try_borrow() {
             Ok(value) => f
@@ -49,7 +49,7 @@ impl<T> From<T> for StrongObj<T> {
     }
 }
 
-impl<T> Clone for StrongObj<T> {
+impl<T: ?Sized> Clone for StrongObj<T> {
     fn clone(&self) -> Self {
         Self {
             value: ManuallyDrop::new(Rc::clone(&self.value)),
@@ -57,9 +57,9 @@ impl<T> Clone for StrongObj<T> {
     }
 }
 
-impl<T> Eq for StrongObj<T> {}
+impl<T: ?Sized> Eq for StrongObj<T> {}
 
-impl<T> PartialEq for StrongObj<T> {
+impl<T: ?Sized> PartialEq for StrongObj<T> {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.value, &other.value)
     }
@@ -79,7 +79,9 @@ impl<T> StrongObj<T> {
             })),
         }
     }
+}
 
+impl<T: ?Sized> StrongObj<T> {
     pub fn downgrade(&self) -> Obj<T> {
         Obj {
             value: Rc::downgrade(&self.value),
@@ -137,9 +139,21 @@ impl<T> StrongObj<T> {
                 .map(|guard| ObjMut::new_inner(loaner.loan(), guard))
         }
     }
+
+    pub fn coerce<V: ?Sized>(mut self, f: impl FnOnce(&RefCell<T>) -> &RefCell<V>) -> StrongObj<V> {
+        let rc = unsafe {
+            let taken = ManuallyDrop::take(&mut self.value);
+            std::mem::forget(self);
+            taken
+        };
+
+        StrongObj {
+            value: ManuallyDrop::new(coerce_rc(rc, f)),
+        }
+    }
 }
 
-impl<T> Drop for StrongObj<T> {
+impl<T: ?Sized> Drop for StrongObj<T> {
     fn drop(&mut self) {
         // Ensure that we're not about to drop an actively-borrowed value.
         if Rc::strong_count(&self.value) == 1 {
@@ -156,11 +170,11 @@ impl<T> Drop for StrongObj<T> {
 // === Obj === //
 
 #[repr(transparent)]
-pub struct Obj<T> {
+pub struct Obj<T: ?Sized> {
     value: Weak<RefCell<T>>,
 }
 
-impl<T: fmt::Debug> fmt::Debug for Obj<T> {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for Obj<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.value.upgrade() {
             Some(value) => match value.try_borrow() {
@@ -181,7 +195,7 @@ impl<T: fmt::Debug> fmt::Debug for Obj<T> {
     }
 }
 
-impl<T> Clone for Obj<T> {
+impl<T: ?Sized> Clone for Obj<T> {
     fn clone(&self) -> Self {
         Self {
             value: self.value.clone(),
@@ -189,9 +203,9 @@ impl<T> Clone for Obj<T> {
     }
 }
 
-impl<T> Eq for Obj<T> {}
+impl<T: ?Sized> Eq for Obj<T> {}
 
-impl<T> PartialEq for Obj<T> {
+impl<T: ?Sized> PartialEq for Obj<T> {
     fn eq(&self, other: &Self) -> bool {
         Weak::ptr_eq(&self.value, &other.value)
     }
@@ -203,8 +217,11 @@ impl<T> Default for Obj<T> {
     }
 }
 
-impl<T> Obj<T> {
-    pub fn new() -> Self {
+impl<T: ?Sized> Obj<T> {
+    pub fn new() -> Self
+    where
+        T: Sized,
+    {
         Self { value: Weak::new() }
     }
 
@@ -297,6 +314,12 @@ impl<T> Obj<T> {
                 Ok(guard) => Ok(ObjMut::new_inner(loaner.loan(), guard)),
                 Err(err) => Err(WeakBorrowMutError::Borrow(err)),
             }
+        }
+    }
+
+    pub fn coerce<V: ?Sized>(self, f: impl FnOnce(&RefCell<T>) -> &RefCell<V>) -> Obj<V> {
+        Obj {
+            value: coerce_weak(self.value, f),
         }
     }
 }

@@ -1,6 +1,13 @@
-use std::{cell::RefCell, fmt};
+use std::{
+    cell::RefCell,
+    fmt,
+    mem::size_of_val,
+    rc::{Rc, Weak},
+};
 
 use rustc_hash::FxHashSet;
+
+// === Formatting === //
 
 pub struct DebugUsingDisplay<'a, T: ?Sized>(pub &'a T);
 
@@ -41,4 +48,38 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for FmtNoCycle<'_, T> {
             }
         })
     }
+}
+
+// === Coercions === //
+
+fn addr_of<T: ?Sized>(p: *const T) -> usize {
+    p as *const () as usize
+}
+
+pub fn coerce_rc<T: ?Sized, V: ?Sized>(rc: Rc<T>, f: impl FnOnce(&T) -> &V) -> Rc<V> {
+    let old_size = size_of_val::<T>(&*rc);
+    let old_rc = Rc::into_raw(rc);
+
+    let new_rc = f(unsafe { &*old_rc });
+    let new_size = size_of_val::<V>(new_rc);
+
+    assert_eq!(addr_of(old_rc), addr_of(new_rc));
+    assert_eq!(old_size, new_size);
+
+    unsafe { Rc::from_raw(new_rc) }
+}
+
+pub fn coerce_weak<T: ?Sized, V: ?Sized>(rc: Weak<T>, f: impl FnOnce(&T) -> &V) -> Weak<V> {
+    assert_ne!(rc.strong_count(), 0);
+
+    let old_rc = Weak::into_raw(rc);
+    let old_size = size_of_val::<T>(unsafe { &*old_rc });
+
+    let new_rc = f(unsafe { &*old_rc });
+    let new_size = size_of_val::<V>(new_rc);
+
+    assert_eq!(addr_of(old_rc), addr_of(new_rc));
+    assert_eq!(old_size, new_size);
+
+    unsafe { Weak::from_raw(new_rc) }
 }
