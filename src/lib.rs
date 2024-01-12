@@ -10,7 +10,7 @@ pub mod prelude {
         cell::CloneCell,
         delegate::delegate,
         entity::{CyclicCtor, Entity, StrongEntity},
-        obj::{Obj, ObjMut, ObjRef, StrongObj},
+        obj::{make_extensible, Obj, ObjMut, ObjRef, StrongObj},
     };
 }
 

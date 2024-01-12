@@ -12,17 +12,18 @@ use autoken::{
     ImmutableBorrow, MutableBorrow, Nothing, PotentialImmutableBorrow, PotentialMutableBorrow,
 };
 
-use crate::util::{coerce_rc, coerce_weak, DebugUsingDisplay, FmtNoCycle};
+use crate::util::{coerce_weak, DebugUsingDisplay, FmtNoCycle, TransRc};
 
 // === StrongObj === //
 
+#[repr(transparent)]
 pub struct StrongObj<T: ?Sized> {
-    value: ManuallyDrop<Rc<RefCell<T>>>,
+    value: ManuallyDrop<TransRc<RefCell<T>>>,
 }
 
 impl<T: ?Sized + fmt::Debug> fmt::Debug for StrongObj<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.value.try_borrow() {
+        match self.value.get().try_borrow() {
             Ok(value) => f
                 .debug_tuple("StrongObj")
                 .field(&FmtNoCycle::<T>(&*value))
@@ -37,9 +38,7 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for StrongObj<T> {
 
 impl<T: Default> Default for StrongObj<T> {
     fn default() -> Self {
-        Self {
-            value: Default::default(),
-        }
+        Self::new(T::default())
     }
 }
 
@@ -52,7 +51,7 @@ impl<T> From<T> for StrongObj<T> {
 impl<T: ?Sized> Clone for StrongObj<T> {
     fn clone(&self) -> Self {
         Self {
-            value: ManuallyDrop::new(Rc::clone(&self.value)),
+            value: self.value.clone(),
         }
     }
 }
@@ -61,22 +60,28 @@ impl<T: ?Sized> Eq for StrongObj<T> {}
 
 impl<T: ?Sized> PartialEq for StrongObj<T> {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.value, &other.value)
+        Weak::ptr_eq(self.value.as_weak(), other.value.as_weak())
     }
 }
 
 impl<T> StrongObj<T> {
     pub fn new(value: T) -> Self {
         Self {
-            value: ManuallyDrop::new(Rc::new(RefCell::new(value))),
+            value: ManuallyDrop::new(Rc::new(RefCell::new(value)).into()),
         }
     }
 
     pub fn new_cyclic(f: impl FnOnce(&Obj<T>) -> T) -> Self {
         Self {
-            value: ManuallyDrop::new(Rc::new_cyclic(|weak| {
-                RefCell::new(f(unsafe { std::mem::transmute(weak) }))
-            })),
+            value: ManuallyDrop::new(
+                Rc::new_cyclic(|weak| {
+                    RefCell::new(f(unsafe {
+                        // Safety: `Obj<T>` is repr(transparent) w.r.t `Weak<T>`
+                        std::mem::transmute(weak)
+                    }))
+                })
+                .into(),
+            ),
         }
     }
 }
@@ -84,35 +89,35 @@ impl<T> StrongObj<T> {
 impl<T: ?Sized> StrongObj<T> {
     pub fn downgrade(&self) -> Obj<T> {
         Obj {
-            value: Rc::downgrade(&self.value),
+            value: self.value.as_weak().clone(),
         }
     }
 
     pub fn get(&self) -> ObjRef<T> {
         unsafe {
             // Safety: we can't drop the cell until it is mutably borrowable
-            ObjRef::new_inner(ImmutableBorrow::new(), self.value.borrow())
+            ObjRef::new_inner(ImmutableBorrow::new(), self.value.get().borrow())
         }
     }
 
     pub fn get_mut(&self) -> ObjMut<T> {
         unsafe {
             // Safety: we can't drop the cell until it is mutably borrowable
-            ObjMut::new_inner(MutableBorrow::new(), self.value.borrow_mut())
+            ObjMut::new_inner(MutableBorrow::new(), self.value.get().borrow_mut())
         }
     }
 
     pub fn get_on_loan<'l>(&self, loaner: &'l ImmutableBorrow<T>) -> ObjRef<T, Nothing<'l>> {
         unsafe {
             // Safety: we can't drop the cell until it is mutably borrowable
-            ObjRef::new_inner(loaner.loan(), self.value.borrow())
+            ObjRef::new_inner(loaner.loan(), self.value.get().borrow())
         }
     }
 
     pub fn get_mut_on_loan<'l>(&self, loaner: &'l mut MutableBorrow<T>) -> ObjMut<T, Nothing<'l>> {
         unsafe {
             // Safety: we can't drop the cell until it is mutably borrowable
-            ObjMut::new_inner(loaner.loan(), self.value.borrow_mut())
+            ObjMut::new_inner(loaner.loan(), self.value.get().borrow_mut())
         }
     }
 
@@ -123,6 +128,7 @@ impl<T: ?Sized> StrongObj<T> {
         unsafe {
             // Safety: we can't drop the cell until it is mutably borrowable
             self.value
+                .get()
                 .try_borrow()
                 .map(|guard| ObjRef::new_inner(loaner.loan(), guard))
         }
@@ -135,6 +141,7 @@ impl<T: ?Sized> StrongObj<T> {
         unsafe {
             // Safety: we can't drop the cell until it is mutably borrowable
             self.value
+                .get()
                 .try_borrow_mut()
                 .map(|guard| ObjMut::new_inner(loaner.loan(), guard))
         }
@@ -148,7 +155,14 @@ impl<T: ?Sized> StrongObj<T> {
         };
 
         StrongObj {
-            value: ManuallyDrop::new(coerce_rc(rc, f)),
+            value: ManuallyDrop::new(rc.coerce(f)),
+        }
+    }
+
+    pub fn as_obj(&self) -> &Obj<T> {
+        unsafe {
+            // Safety: `Obj<T>` is repr(transparent) w.r.t `Weak<T>` and `Weak<T>` is always `Sized`.
+            std::mem::transmute(self.value.as_weak())
         }
     }
 }
@@ -156,8 +170,8 @@ impl<T: ?Sized> StrongObj<T> {
 impl<T: ?Sized> Drop for StrongObj<T> {
     fn drop(&mut self) {
         // Ensure that we're not about to drop an actively-borrowed value.
-        if Rc::strong_count(&self.value) == 1 {
-            if let Err(err) = self.value.try_borrow_mut() {
+        if self.value.as_weak().strong_count() == 1 {
+            if let Err(err) = self.value.get().try_borrow_mut() {
                 panic!("attempted to drop StrongObj while in use: {err:?}");
             }
         }
@@ -231,7 +245,7 @@ impl<T: ?Sized> Obj<T> {
 
     pub fn try_upgrade(&self) -> Option<StrongObj<T>> {
         self.value.upgrade().map(|obj| StrongObj {
-            value: ManuallyDrop::new(obj),
+            value: ManuallyDrop::new(obj.into()),
         })
     }
 
@@ -321,6 +335,68 @@ impl<T: ?Sized> Obj<T> {
         Obj {
             value: coerce_weak(self.value, f),
         }
+    }
+}
+
+// === AnyObj === //
+
+// ExtendsObj Trait
+pub trait ExtendsObj {
+    type Wrapper: ObjWrapper<Wrapped = Self>;
+}
+
+pub unsafe trait ObjWrapper {
+    type Wrapped: ?Sized;
+}
+
+#[doc(hidden)]
+pub mod make_extensible_macro_internals {
+    pub use super::{ExtendsObj, Obj, ObjWrapper};
+}
+
+#[macro_export]
+macro_rules! make_extensible {
+    (
+        $vis:vis $extender:ident $(<$($lt:lifetime),* $(,)? $($para:ident)*>)? for $target:path
+        $(where $($clauses:tt)*)?
+    ) => {
+        #[repr(transparent)]
+        $vis struct $extender $(<$($lt,)* $($para)*>)?
+		$(where $($clauses)*)?
+		{
+			$vis obj: $crate::obj::make_extensible_macro_internals::Obj<$target>,
+		}
+
+		impl $(< $($lt,)* $($para,)* >)? $crate::obj::make_extensible_macro_internals::ExtendsObj for $target $(< $($lt,)* $($para,)* >)?
+		$(where $($clauses)*)?
+		{
+			type Wrapper = $extender $(< $($lt,)* $($para,)* >)?;
+		}
+
+		unsafe impl $(< $($lt,)* $($para,)* >)? $crate::obj::make_extensible_macro_internals::ObjWrapper for $extender $(< $($lt,)* $($para,)* >)?
+		$(where $($clauses)*)?
+		{
+			type Wrapped = $target $(< $($lt,)* $($para,)* >)?;
+		}
+    };
+}
+
+pub use make_extensible;
+
+// Deref Impls
+impl<T: ?Sized + ExtendsObj> Deref for Obj<T> {
+    type Target = T::Wrapper;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { std::mem::transmute(&self.value) }
+    }
+}
+
+impl<T: ?Sized + ExtendsObj> Deref for StrongObj<T> {
+    type Target = T::Wrapper;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_obj()
     }
 }
 
