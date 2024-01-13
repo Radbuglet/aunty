@@ -345,6 +345,7 @@ pub trait ExtendsObj {
     type Wrapper: ObjWrapper<Wrapped = Self>;
 }
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe trait ObjWrapper {
     type Wrapped: ?Sized;
 }
@@ -357,14 +358,14 @@ pub mod make_extensible_macro_internals {
 #[macro_export]
 macro_rules! make_extensible {
     (
-        $vis:vis $extender:ident $(<$($lt:lifetime),* $(,)? $($para:ident)*>)? for $target:path
+        $vis:vis $extender:ident $(<$($lt:lifetime),* $(,)? $($para:ident),* $(,)?>)? for $target:ident
         $(where $($clauses:tt)*)?
     ) => {
         #[repr(transparent)]
-        $vis struct $extender $(<$($lt,)* $($para)*>)?
+        $vis struct $extender $(<$($lt,)* $($para,)*>)?
 		$(where $($clauses)*)?
 		{
-			$vis obj: $crate::obj::make_extensible_macro_internals::Obj<$target>,
+			$vis obj: $crate::obj::make_extensible_macro_internals::Obj<$target $(<$($lt,)* $($para,)*>)?>,
 		}
 
 		impl $(< $($lt,)* $($para,)* >)? $crate::obj::make_extensible_macro_internals::ExtendsObj for $target $(< $($lt,)* $($para,)* >)?
