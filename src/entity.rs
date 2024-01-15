@@ -477,6 +477,11 @@ impl Entity {
         self
     }
 
+    pub fn with_many(self, f: impl FnOnce(Entity)) -> Self {
+        f(self);
+        self
+    }
+
     pub fn with_debug_label<L: AsDebugLabel>(self, label: L) -> Self {
         #[cfg(debug_assertions)]
         self.with(DebugLabel::from(label));
@@ -683,6 +688,11 @@ impl StrongEntity {
 
     pub fn with_raw<T: 'static>(self, comp: StrongObj<T>) -> Self {
         self.0.with_raw(comp);
+        self
+    }
+
+    pub fn with_many(self, f: impl FnOnce(Entity)) -> Self {
+        f(self.0);
         self
     }
 
