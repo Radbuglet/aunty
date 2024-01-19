@@ -11,6 +11,7 @@ use std::{
 
 use autoken::{ImmutableBorrow, MutableBorrow, Nothing};
 use debug::{AsDebugLabel, DebugLabel};
+use derive_where::derive_where;
 
 use crate::{
     obj::{Obj, ObjMut, ObjRef, StrongObj},
@@ -555,6 +556,13 @@ impl Entity {
     pub fn is_alive(self) -> bool {
         ALIVE.with(|slots| slots.borrow().contains_key(&self))
     }
+
+    pub fn typed<T: 'static>(self) -> EntityWith<T> {
+        EntityWith {
+            _ty: PhantomData,
+            entity: self,
+        }
+    }
 }
 
 impl fmt::Debug for Entity {
@@ -760,6 +768,13 @@ impl StrongEntity {
     pub fn is_alive(&self) -> bool {
         self.0.is_alive()
     }
+
+    pub fn typed<T: 'static>(self) -> StrongEntityWith<T> {
+        StrongEntityWith {
+            _ty: PhantomData,
+            entity: self,
+        }
+    }
 }
 
 impl Borrow<Entity> for StrongEntity {
@@ -770,7 +785,9 @@ impl Borrow<Entity> for StrongEntity {
 
 impl Drop for StrongEntity {
     fn drop(&mut self) {
-        ALIVE.with(|slots| {
+        // If we're being called after `ALIVE` was destroyed, this will error. That is fine because
+        // the map will already have been dropped, causing all component references to expire.
+        let _ = ALIVE.try_with(|slots| {
             let mut slots = slots.borrow_mut();
             let hashbrown::hash_map::Entry::Occupied(mut entry) = slots.entry(self.0) else {
                 unreachable!()
@@ -792,6 +809,145 @@ impl Drop for StrongEntity {
 pub trait CyclicCtor<C>: FnOnce(Entity, &Obj<C>) -> C {}
 
 impl<C, F: FnOnce(Entity, &Obj<C>) -> C> CyclicCtor<C> for F {}
+
+// === EntityWith === //
+
+#[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
+pub struct EntityWith<T: 'static> {
+    _ty: PhantomData<fn() -> T>,
+    entity: Entity,
+}
+
+impl<T: 'static + fmt::Debug> fmt::Debug for EntityWith<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntityWith")
+            .field("entity", &self.entity)
+            .field("value", &self.entity.obj::<T>())
+            .finish()
+    }
+}
+
+impl<T: 'static> EntityWith<T> {
+    pub fn entity(self) -> Entity {
+        self.entity
+    }
+
+    pub fn obj(self) -> Obj<T> {
+        self.entity.obj()
+    }
+
+    pub fn get(self) -> ObjRef<T> {
+        self.entity.get()
+    }
+
+    pub fn get_mut(self) -> ObjMut<T> {
+        self.entity.get_mut()
+    }
+
+    pub fn get_on_loan(self, loaner: &ImmutableBorrow<T>) -> ObjRef<T, Nothing<'_>> {
+        self.entity.get_on_loan(loaner)
+    }
+
+    pub fn get_mut_on_loan(self, loaner: &mut MutableBorrow<T>) -> ObjMut<T, Nothing<'_>> {
+        self.entity.get_mut_on_loan(loaner)
+    }
+
+    pub fn try_get(self, loaner: &ImmutableBorrow<T>) -> Option<ObjRef<T, Nothing<'_>>> {
+        self.entity.try_get(loaner)
+    }
+
+    pub fn try_get_mut(self, loaner: &mut MutableBorrow<T>) -> Option<ObjMut<T, Nothing<'_>>> {
+        self.entity.try_get_mut(loaner)
+    }
+
+    pub fn upgrade(self) -> StrongEntityWith<T> {
+        StrongEntityWith {
+            _ty: PhantomData,
+            entity: self.entity.upgrade(),
+        }
+    }
+
+    pub fn is_alive(self) -> bool {
+        self.entity.has::<T>()
+    }
+}
+
+#[derive_where(Clone, Hash, Eq, PartialEq)]
+pub struct StrongEntityWith<T: 'static> {
+    _ty: PhantomData<fn() -> T>,
+    entity: StrongEntity,
+}
+
+impl<T: 'static + fmt::Debug> fmt::Debug for StrongEntityWith<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StrongEntityWith")
+            .field("entity", &self.entity)
+            .field("value", &self.entity.obj::<T>())
+            .finish()
+    }
+}
+
+impl<T: 'static> StrongEntityWith<T> {
+    pub fn new(comp: T) -> Self {
+        Self {
+            _ty: PhantomData,
+            entity: StrongEntity::new().with(comp),
+        }
+    }
+
+    pub fn new_cyclic(f: impl CyclicCtor<T>) -> Self {
+        Self {
+            _ty: PhantomData,
+            entity: StrongEntity::new().with_cyclic(f),
+        }
+    }
+
+    pub fn into_entity(self) -> StrongEntity {
+        self.entity
+    }
+
+    pub fn entity(&self) -> Entity {
+        self.entity.entity()
+    }
+
+    pub fn obj(&self) -> Obj<T> {
+        self.entity.obj()
+    }
+
+    pub fn get(&self) -> ObjRef<T> {
+        self.entity.get()
+    }
+
+    pub fn get_mut(&self) -> ObjMut<T> {
+        self.entity.get_mut()
+    }
+
+    pub fn get_on_loan<'l>(&self, loaner: &'l ImmutableBorrow<T>) -> ObjRef<T, Nothing<'l>> {
+        self.entity.get_on_loan(loaner)
+    }
+
+    pub fn get_mut_on_loan<'l>(&self, loaner: &'l mut MutableBorrow<T>) -> ObjMut<T, Nothing<'l>> {
+        self.entity.get_mut_on_loan(loaner)
+    }
+
+    pub fn try_get<'l>(&self, loaner: &'l ImmutableBorrow<T>) -> Option<ObjRef<T, Nothing<'l>>> {
+        self.entity.try_get(loaner)
+    }
+
+    pub fn try_get_mut<'l>(
+        &self,
+        loaner: &'l mut MutableBorrow<T>,
+    ) -> Option<ObjMut<T, Nothing<'l>>> {
+        self.entity.try_get_mut(loaner)
+    }
+
+    pub fn downgrade(&self) -> EntityWith<T> {
+        EntityWith {
+            _ty: PhantomData,
+            entity: self.entity(),
+        }
+    }
+}
 
 // === Debug utilities === //
 

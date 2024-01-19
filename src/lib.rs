@@ -9,7 +9,7 @@ pub mod prelude {
     pub use super::{
         cell::CloneCell,
         delegate::delegate,
-        entity::{CyclicCtor, Entity, StrongEntity},
+        entity::{CyclicCtor, Entity, EntityWith, StrongEntity, StrongEntityWith},
         obj::{make_extensible, Obj, ObjMut, ObjRef, StrongObj},
     };
 }
