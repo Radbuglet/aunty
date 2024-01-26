@@ -24,10 +24,7 @@ pub struct StrongObj<T: ?Sized> {
 impl<T: ?Sized + fmt::Debug> fmt::Debug for StrongObj<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.value.get().try_borrow() {
-            Ok(value) => f
-                .debug_tuple("StrongObj")
-                .field(&FmtNoCycle::<T>(&*value))
-                .finish(),
+            Ok(value) => fmt::Debug::fmt(&FmtNoCycle::<T>(&*value), f),
             Err(err) => f
                 .debug_tuple("StrongObj")
                 .field(&DebugUsingDisplay(&err))
@@ -192,10 +189,7 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Obj<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.value.upgrade() {
             Some(value) => match value.try_borrow() {
-                Ok(value) => f
-                    .debug_tuple("Obj")
-                    .field(&FmtNoCycle::<T>(&*value))
-                    .finish(),
+                Ok(value) => fmt::Debug::fmt(&FmtNoCycle::<T>(&*value), f),
                 Err(err) => f
                     .debug_tuple("Obj")
                     .field(&DebugUsingDisplay(&err))
