@@ -1,7 +1,7 @@
 use std::{
     cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut},
     error::Error,
-    fmt,
+    fmt, hash,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::NonNull,
@@ -12,7 +12,10 @@ use autoken::{
     ImmutableBorrow, MutableBorrow, Nothing, PotentialImmutableBorrow, PotentialMutableBorrow,
 };
 
-use crate::util::{coerce_weak, DebugUsingDisplay, FmtNoCycle, TransRc};
+use crate::{
+    util::{coerce_weak, DebugUsingDisplay, FmtNoCycle, TransRc},
+    Leased,
+};
 
 // === StrongObj === //
 
@@ -61,6 +64,12 @@ impl<T: ?Sized> PartialEq for StrongObj<T> {
     }
 }
 
+impl<T: ?Sized> hash::Hash for StrongObj<T> {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.as_obj().hash(state);
+    }
+}
+
 impl<T> StrongObj<T> {
     pub fn new(value: T) -> Self {
         Self {
@@ -102,6 +111,14 @@ impl<T: ?Sized> StrongObj<T> {
             // Safety: we can't drop the cell until it is mutably borrowable
             ObjMut::new_inner(MutableBorrow::new(), self.value.get().borrow_mut())
         }
+    }
+
+    pub fn get_leased(&self) -> Leased<impl Fn() -> ObjRef<T> + '_> {
+        Leased::new(|| self.get())
+    }
+
+    pub fn get_mut_leased(&self) -> Leased<impl Fn() -> ObjMut<T> + '_> {
+        Leased::new(|| self.get_mut())
     }
 
     pub fn get_on_loan<'l>(&self, loaner: &'l ImmutableBorrow<T>) -> ObjRef<T, Nothing<'l>> {
@@ -219,6 +236,12 @@ impl<T: ?Sized> PartialEq for Obj<T> {
     }
 }
 
+impl<T: ?Sized> hash::Hash for Obj<T> {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.value.as_ptr().hash(state);
+    }
+}
+
 impl<T> Default for Obj<T> {
     fn default() -> Self {
         Self::new()
@@ -271,6 +294,14 @@ impl<T: ?Sized> Obj<T> {
             // dropped until this `CompRef` is dropped.
             ObjMut::new_inner(MutableBorrow::new(), self.upgrade_unguarded().borrow_mut())
         }
+    }
+
+    pub fn get_leased(&self) -> Leased<impl Fn() -> ObjRef<T> + '_> {
+        Leased::new(|| self.get())
+    }
+
+    pub fn get_mut_leased(&self) -> Leased<impl Fn() -> ObjMut<T> + '_> {
+        Leased::new(|| self.get_mut())
     }
 
     pub fn get_on_loan<'l>(&self, loaner: &'l ImmutableBorrow<T>) -> ObjRef<T, Nothing<'l>> {
